@@ -50,7 +50,6 @@ set -euo pipefail
 APP_BUNDLE="$(cd "$(dirname "$0")/../.." && pwd)"
 RESOURCES="$APP_BUNDLE/Contents/Resources"
 SOURCE="$RESOURCES/video-rabbit-holes"
-SKILL="$HOME/.agents/skills/video-rabbit-holes"
 RUNTIME="$HOME/.codex/video-research-runtime"
 PYTHON="$RUNTIME/venv/bin/python"
 if [[ ! -x "$PYTHON" || ! -f "$RUNTIME/setup-complete" ]]; then
@@ -66,12 +65,8 @@ end run
 APPLESCRIPT
   exit 0
 fi
-APP_CODE="$SKILL"
-if [[ ! -f "$APP_CODE/scripts/app.py" ]]; then
-  APP_CODE="$SOURCE"
-fi
 export VIDEO_WORKBENCH_BUNDLE_SOURCE="$SOURCE"
-exec "$PYTHON" "$APP_CODE/scripts/app.py"
+exec "$PYTHON" "$SOURCE/scripts/app.py"
 '''
     executable.parent.mkdir(parents=True, exist_ok=True)
     executable.write_text(launcher, encoding="utf-8")

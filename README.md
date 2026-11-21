@@ -10,7 +10,7 @@ Video Workbench is a desktop app for collecting and organizing evidence from sup
 4. A Terminal window installs Python 3.12, Tk and the app's Python packages. Chromium downloads only if a site later requires sign-in. If Homebrew is missing, install it from [brew.sh](https://brew.sh) and open Video Workbench again.
 5. Choose whether to install the optional Codex skill. You can change that later in Settings.
 
-The first setup downloads Python packages. In Settings, select a speech model and press **Cache model** once while online. It is stored locally and works offline after that. The default Base model and three CPU threads are chosen for an 8 GB Apple Silicon Mac. Tiny uses less memory. Small and Medium use more memory and take longer on CPU.
+The first setup downloads Python packages. Replacing the app with a newer release does not repeat setup when the runtime is already installed. In Settings, select a speech model and press **Cache model** once while online. It is stored locally and works offline after that. The default Base model and three CPU threads are chosen for an 8 GB Apple Silicon Mac. Tiny uses less memory. Small and Medium use more memory and take longer on CPU.
 
 ## Connect Obsidian
 
