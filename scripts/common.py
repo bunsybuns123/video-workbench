@@ -33,8 +33,6 @@ DEFAULTS = {
     "ocr_engine": "windows" if os.name == 'nt' else "rapidocr", "ocr_language": "en-US",
     "max_duration_minutes": 60, "max_download_mib": 512,
     "max_packet_mib": 2048, "job_timeout_minutes": 60,
-    "scroll_interval": 4, "scroll_steps": 10,
-    "scroll_minutes": 5, "scroll_max_results": 100,
     "caption_languages": "en.*,fi",
 }
 
@@ -79,15 +77,15 @@ def load_json(path, fallback=None):
 
 def validate_settings(values):
     settings = {**DEFAULTS, **values}
+    for obsolete in ("scroll_interval", "scroll_steps", "scroll_minutes", "scroll_max_results"):
+        settings.pop(obsolete, None)
     ranges = {
         "threads": (1, 16, int), "frame_interval": (0.1, 30, float),
         "frame_width": (320, 1920, int), "max_duration_minutes": (1, 240, int),
         "download_height": (360, 2160, int), "evidence_max_hold": (5, 120, float),
         "evidence_min_change": (0.5, 10, float), "ocr_threads": (1, 8, int),
         "max_download_mib": (16, 4096, int), "max_packet_mib": (32, 16384, int),
-        "job_timeout_minutes": (1, 240, int), "scroll_interval": (2, 60, float),
-        "scroll_steps": (1, 200, int), "scroll_minutes": (1, 30, int),
-        "scroll_max_results": (1, 1000, int),
+        "job_timeout_minutes": (1, 240, int),
     }
     for key, (low, high, cast) in ranges.items():
         try:
@@ -161,7 +159,7 @@ def canonical_source(value, local=True):
 
 def data_dirs(settings):
     root = Path(settings["output_dir"])
-    for name in ("packets", "discoveries", "jobs"):
+    for name in ("packets", "jobs"):
         (root / name).mkdir(parents=True, exist_ok=True)
     return root
 
@@ -174,7 +172,8 @@ def new_job(source, settings, provenance=None, project_id="inbox", session_id=No
     from projects import project_path, session_folder
     parent = session_folder(settings, project_id, session_id) if session_id else project_path(settings, project_id)
     job = {"schema_version": 1, "id": identifier, "source": source, "project_id": project_id, "session_id": session_id,
-           "created_at": utc(), "status": "queued", "settings": settings,
+           "created_at": utc(), "queue_order": datetime.now(timezone.utc).isoformat(timespec="microseconds"),
+           "status": "queued", "settings": settings,
            "provenance": provenance or {"origin": "manual_link", "search_prompt": None,
                                          "discovered_at": None, "discovery_session_id": None},
            "packet_path": str(parent / "packets" / identifier), "error": None}

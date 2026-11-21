@@ -1,12 +1,9 @@
 """Synthetic fixtures only. No user packets or personal browser sessions."""
-import json
 import os
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
-import queue
-from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -14,7 +11,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 from common import (DEFAULTS, atomic_json, binary, canonical_source, exclusive,
                     load_json, LockBusy, new_job, spawn, utc, validate_settings, worker_env)
 from analyzer import OptionalCaptions, Quiet, error_label, rebuild_index, run_media, supervise
-from scroller import SNAPSHOT, collect, matches_search, search_url
 
 INTEGRATION = "--integration" in sys.argv
 if INTEGRATION:
@@ -40,7 +36,7 @@ class CoreTests(unittest.TestCase):
                 canonical_source(value)
 
     def test_settings_bounds(self):
-        for key, value in (("threads", 0), ("frame_interval", "nan"), ("scroll_minutes", 100), ("output_dir", ""), ("language", "English")):
+        for key, value in (("threads", 0), ("frame_interval", "nan"), ("job_timeout_minutes", 1000), ("output_dir", ""), ("language", "English")):
             with self.subTest(key=key), self.assertRaises(ValueError):
                 validate_settings({**self.settings, key: value})
         self.assertEqual(validate_settings(self.settings)["frame_interval"], .5)
@@ -86,34 +82,6 @@ class CoreTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             remove_entry(self.settings, folder)
 
-    @unittest.skipUnless(INTEGRATION, "--integration")
-    def test_session_queue_produces_separate_packets(self):
-        import sessions
-        from common import utc
-        video = self.root / "fixture.mp4"
-        run_media([binary("ffmpeg"), "-y", "-f", "lavfi", "-i", "color=red:s=160x120:r=10:d=1", "-c:v", "libx264", str(video)])
-        records = [{"url": url, "search_prompt": "fixture query", "discovered_at": utc(), "origin": "keyword_scroller"} for url in
-                   ["https://www.youtube.com/watch?v=XLtBXlcBRzE", "https://www.youtube.com/watch?v=kXYvRR7gV2E"]]
-        session = {"id": "fixture-session", "project_id": "inbox", "title": "Fixture", "settings": self.settings,
-                   "search_prompts": ["fixture query"], "started_at": utc(), "status": "processing", "results": records}
-        processor = sessions.SessionQueue(session)
-        def create(source, settings, provenance, project_id, session_id):
-            return new_job(str(video), settings, provenance, project_id, session_id)
-        def process(script, args, **kwargs):
-            result = supervise(args[-1])
-            return SimpleNamespace(poll=lambda: result)
-        with patch.object(sessions, "new_job", create), patch.object(sessions, "spawn", process):
-            processor.enqueue()
-            self.assertEqual(len({r["job_id"] for r in records}), 2)
-            for _ in range(4):
-                processor.tick()
-            self.assertFalse(processor.busy())
-        self.assertEqual(processor.outcome(), "partial")
-        processor.save()
-        manifests = list(processor.folder.glob("packets/*/packet.json"))
-        self.assertEqual(len(manifests), 2)
-        self.assertTrue(all(load_json(p)["research"]["search_prompt"] == "fixture query" for p in manifests))
-
     def test_project_ui_initialization(self):
         import tkinter as tk
         import app
@@ -122,7 +90,7 @@ class CoreTests(unittest.TestCase):
         try:
             with patch.object(app, "settings_load", lambda: self.settings):
                 ui = app.Workbench(root)
-                for page in ("Analyzer", "Library", "Scroller", "Settings"):
+                for page in ("Analyzer", "Library", "Settings"):
                     ui.show(page)
                     root.update_idletasks()
                 self.assertEqual(ui.selected_project(), "inbox")
@@ -160,30 +128,6 @@ class CoreTests(unittest.TestCase):
             selected = downloader.process_subtitles("fixture", {}, original)
             self.assertEqual(set(selected), {"en-orig"})
 
-    def test_no_handoff_and_exact_provenance(self):
-        session = {"id": "fixture", "platform": "youtube", "settings": self.settings, "results": []}
-        snapshot = {"links": [{"url": "https://youtu.be/XLtBXlcBRzE?si=x", "title": "Synthetic result"}]}
-        collect(snapshot, session, "first exact query")
-        collect(snapshot, session, "second exact query")
-        self.assertEqual(len(session["results"]), 1)
-        record = session["results"][0]
-        self.assertEqual(record["search_prompts"], ["first exact query", "second exact query"])
-        self.assertEqual(len(record["observations"]), 2)
-        job = new_job(record["url"], self.settings, record)
-        self.assertEqual(job["status"], "queued")
-        self.assertEqual(job["provenance"]["search_prompt"], "first exact query")
-        self.assertTrue(job["created_at"].endswith("+00:00"))
-        self.assertFalse(Path(job["packet_path"]).exists())
-        self.assertFalse(record["automatic_analysis"])
-
-    def test_query_encoding_and_attribution(self):
-        query = "test & exact + unicode ä"
-        for platform in ("youtube", "tiktok"):
-            url = search_url(platform, query)
-            self.assertTrue(matches_search(url, platform, query))
-            self.assertFalse(matches_search(url, platform, "other query"))
-        self.assertFalse(matches_search("https://www.youtube.com/watch?v=XLtBXlcBRzE", "youtube", query))
-
     def test_exclusive_worker_and_environment(self):
         lock = self.root / "worker.lock"
         with exclusive(lock):
@@ -197,99 +141,6 @@ class CoreTests(unittest.TestCase):
         self.assertNotIn("OPENAI_API_KEY", env)
         self.assertNotIn("TEST_PASSWORD", env)
         self.assertEqual(env["HF_HUB_OFFLINE"], "1")
-
-    @unittest.skipUnless(INTEGRATION, "--integration")
-    def test_browser_visible_gates(self):
-        from playwright.sync_api import sync_playwright
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
-            try:
-                page = browser.new_page()
-                page.set_content('<a href="https://www.youtube.com/watch?v=XLtBXlcBRzE">Fixture</a><button>Sign in</button>')
-                snap = page.evaluate(SNAPSHOT)
-                self.assertIsNone(snap["gate"], "A normal header sign-in button must not block public browsing")
-                self.assertEqual(len(snap["links"]), 1)
-                page.set_content('<div role="dialog">Log in to TikTok</div>')
-                self.assertEqual(page.evaluate(SNAPSHOT)["gate"], "Sign-in required")
-                page.set_content('<div>Verify you are human</div>')
-                self.assertEqual(page.evaluate(SNAPSHOT)["gate"], "Verification required")
-                page.set_content('<div role="dialog" style="display:none">Log in</div>')
-                self.assertIsNone(page.evaluate(SNAPSHOT)["gate"])
-                page.set_content('<div role="dialog">Sign in. Before you continue. Accept all or reject all</div>')
-                self.assertEqual(page.evaluate(SNAPSHOT)["gate"], "Consent required")
-            finally:
-                browser.close()
-
-    @unittest.skipUnless(INTEGRATION, "--integration")
-    def test_scroller_controlled_browser_session(self):
-        self.controlled_browser_session('youtube')
-
-    @unittest.skipUnless(INTEGRATION, '--integration')
-    def test_tiktok_controlled_browser_session(self):
-        self.controlled_browser_session('tiktok')
-
-    def controlled_browser_session(self, platform):
-        """Exercise real scrolling/navigation with intercepted synthetic pages only."""
-        import scroller
-        from playwright.sync_api import sync_playwright
-        original = sync_playwright
-        commands = queue.Queue()
-        events = []
-        settings = {**self.settings, "scroll_steps": 2, "scroll_interval": 2, "scroll_minutes": 1}
-        prompts = ["first exact query", "second exact query"]
-        paused = False
-
-        class Input:
-            def __iter__(self):
-                while True:
-                    try:
-                        command = commands.get(timeout=30)
-                    except queue.Empty:
-                        command = {"action": "stop"}
-                    yield json.dumps(command) + "\n"
-                    if command["action"] == "stop":
-                        return
-
-        def emitted(event, **data):
-            nonlocal paused
-            events.append({"event": event, **data})
-            if data.get("status") == "Browser ready":
-                commands.put({"action": "start", "settings": settings, "prompts": prompts, "analyze": False})
-            if event == "results" and not paused:
-                paused = True
-                commands.put({"action": "pause"})
-            if data.get("status") == "Paused":
-                commands.put({"action": "resume"})
-            if data.get("status") == "Complete":
-                commands.put({"action": "stop"})
-
-        class Managed:
-            def __enter__(self):
-                self.manager = original()
-                actual = self.manager.__enter__()
-                def launch(profile, **kwargs):
-                    context = actual.chromium.launch_persistent_context(profile, **{**kwargs, "headless": True})
-                    url = 'https://www.youtube.com/watch?v=XLtBXlcBRzE' if platform=='youtube' else 'https://www.tiktok.com/@fixture/video/1234567890123456789'
-                    html = '<a style="display:block" href="'+url+'">Synthetic result</a><div style="height:4000px">Fixture</div>'
-                    context.route("**/*", lambda route: route.fulfill(status=200, content_type="text/html", body=html))
-                    return context
-                return SimpleNamespace(chromium=SimpleNamespace(launch_persistent_context=launch))
-            def __exit__(self, *args):
-                return self.manager.__exit__(*args)
-
-        with patch("playwright.sync_api.sync_playwright", Managed), patch.object(scroller, "APP_HOME", self.root / "app"), patch.object(scroller, "emit", emitted), patch.object(scroller, "settings_load", lambda: settings), patch.object(sys, "stdin", Input()):
-            scroller.run(platform)
-        states = [e.get("status") for e in events]
-        self.assertIn("Paused", states)
-        self.assertIn("Complete", states)
-        files = list((Path(settings["output_dir"]) / "discoveries").glob("*.json"))
-        self.assertEqual(len(files), 1)
-        session = load_json(files[0])
-        self.assertEqual(session["status"], "complete")
-        self.assertEqual(session["search_prompts"], prompts)
-        self.assertEqual(session["results"][0]["search_prompts"], prompts)
-        self.assertFalse(session["automatic_codex_handoff"])
-        self.assertFalse(list((Path(settings["output_dir"]) / "packets").iterdir()))
 
     @unittest.skipUnless(INTEGRATION, "--integration")
     def test_whole_local_pipeline(self):

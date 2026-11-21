@@ -5,6 +5,9 @@ import shutil
 import uuid
 from common import atomic_json, data_dirs, load_json, utc, exclusive, LockBusy
 
+DONE = {"complete", "partial", "failed", "cancelled", "interrupted", "time_limit", "storage_limit",
+        "access_blocked", "rate_limited", "sign_in_required", "model_unavailable", "removed"}
+
 
 def assert_reading_idle(source):
     packets = [source] if (source/'packet.json').is_file() else [p.parent for p in source.glob('packets/*/packet.json')]
@@ -137,7 +140,6 @@ def remove_entry(settings, source):
     assert_reading_idle(source)
     jobs = [load_json(p) for p in (root / "jobs").glob("*.json")]
     jobs = [j for j in jobs if j and Path(j["packet_path"]).resolve().is_relative_to(source)]
-    from sessions import DONE
     if any(j["status"] not in DONE for j in jobs):
         raise ValueError("Wait for processing to finish")
     session = load_json(source / "SESSION.json", {})

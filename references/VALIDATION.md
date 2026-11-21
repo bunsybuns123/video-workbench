@@ -1,5 +1,13 @@
 # Validation
 
+## Queue and download repair, 2026-11-21
+
+Version 0.2.0 replaces multi-link submission and the separate Run queue action with single-link Add to queue, Add files and one project-scoped Analyze action. Queue insertion is timestamped to preserve order, pending entries are shown first, and the Analyzer keeps the 20 most recent terminal attempts visible. Projects created from Analyzer and Library use the same name dialog. Existing project and session folders are retained.
+
+The keyword Scroller and its processor were removed. Earlier checks below that describe Scroller UI, browser search or synthetic sessions refer to version 0.1.3. Sign-in is now offered only after a sign-in-required result. It opens a dedicated app-owned browser profile, and yt-dlp uses that profile on a later retry. Explicit downloader retry counts and socket timeout replace the former zero-retry setup. Error classification gives explicit sign-in messages precedence over broad bot and HTTP block wording. Failure details are stored in the job with query strings redacted.
+
+The tagged GitHub workflow checks Python syntax and builds the Mac app package. Its result for this revision is recorded after publication. A physical MacBook M2 download and live platform download remain unverified.
+
 ## Stop and restart repair
 
 The reported failure was reproduced in the desktop UI. The rebuild log recorded Windows error 5 while atomically replacing evidence/status.json, followed by the same failure in error reporting. Atomic writes now retry transient PermissionError with a bounded backoff, preserve the prior file on permanent failure, and clean temporary files. A restart requested while cancellation finishes is queued once instead of silently ignored. Completed reader snapshots remain available after an interrupted subsequent build. Regression coverage checks these conditions, in addition to the existing evidence and collection checks.
@@ -22,7 +30,7 @@ Checked locally on Windows, 2026-10-29.
 
 The synthetic integration suite checks actual speech recognition and red/blue pixel evidence across the complete test clip, chronological source frame timestamps, contact sheet creation, audio measurements, preserved exact search prompts and times, canonical URLs, invalid-source rejection, setting bounds, OS-held exclusive locks, filtered worker environments, cancellation of real worker processes, silent partial packets, duration rejection, missing-model partial packets, and browser gate detection. No user research packet is consumed by these tests. The skill validator and runtime dependency check also pass.
 
-The native UI was visually inspected in Analyzer, Scroller, Settings and Library. The app runs from its installed skill folder. The color palette and local system fonts require no remote assets.
+The version 0.1.3 native UI was visually inspected in Analyzer, Scroller, Settings and Library. The app ran from its installed skill folder. The color palette and local system fonts required no remote assets.
 
 All 17 automated checks pass. A real Chromium session with network requests intercepted by local fixture pages also verifies keyword navigation, automatic scrolling, pause/resume, exact multi-query provenance, completion status, and creation of no video packets. This controlled browser test is distinct from the live platform checks below.
 

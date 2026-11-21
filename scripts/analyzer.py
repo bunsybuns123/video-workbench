@@ -4,6 +4,7 @@ import json
 import math
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -12,7 +13,7 @@ import wave
 import traceback
 from yt_dlp import YoutubeDL
 from yt_dlp.utils import DownloadError
-from common import (atomic_json, binary, canonical_source, clock, data_dirs, digest,
+from common import (APP_HOME, atomic_json, binary, canonical_source, clock, data_dirs, digest,
                     exclusive, folder_size, load_json, LockBusy, new_job, RUNTIME, settings_load, spawn,
                     stop_process, utc, validate_settings, worker_env)
 
@@ -48,13 +49,18 @@ def error_label(error):
     text = str(error).lower()
     if "429" in text or "too many requests" in text:
         return "rate_limited"
-    if any(x in text for x in ("captcha", "not a bot", "verify", "403", "429", "blocked")):
-        return "access_blocked"
     if any(x in text for x in ("sign in", "log in", "login", "authentication", "private video", "members-only")):
         return "sign_in_required"
+    if any(x in text for x in ("captcha", "not a bot", "verify", "403", "blocked")):
+        return "access_blocked"
     if "offline mode" in text or "local cache" in text or "cached" in text or "model unavailable" in text:
         return "model_unavailable"
     return "failed"
+
+
+def safe_error_detail(error):
+    text = re.sub(r"(https?://[^\s?]+)\?[^\s]+", r"\1?[redacted]", str(error))
+    return re.sub(r"\s+", " ", text).strip()[:600]
 
 
 class Quiet:
@@ -65,7 +71,7 @@ class Quiet:
 
 
 class OptionalCaptions(YoutubeDL):
-    """A caption failure must not abort media acquisition. No access retries."""
+    """A caption failure must not abort media acquisition."""
     def __init__(self, options):
         super().__init__(options)
         self.caption_warnings = []
@@ -116,17 +122,16 @@ def acquire(job, packet):
             raise TimeoutError('Download time limit')
         if state.get("downloaded_bytes", 0) > limit:
             raise RuntimeError("Download size limit")
+        if state.get("status") == "downloading":
+            total = state.get("total_bytes") or state.get("total_bytes_estimate")
+            if total:
+                fraction = min(1.0, state.get("downloaded_bytes", 0) / total)
+                progress(job, "downloading", 5 + 14 * fraction)
+        elif state.get("status") == "finished":
+            progress(job, "downloading", 19)
 
-    options = {"quiet": True, "logger": Quiet(), "no_warnings": True,
-               "noplaylist": True, "cachedir": False, "socket_timeout": 15,
-               "retries": 0, "fragment_retries": 0, "extractor_retries": 0,
-               "max_filesize": limit, "ffmpeg_location": str(Path(binary("ffmpeg")).parent),
-               "format": f"bestvideo[height<={settings['download_height']}]+bestaudio/best[height<={settings['download_height']}]",
-               "merge_output_format": "mp4",
-               "outtmpl": str(target / "video.%(ext)s"), "windowsfilenames": True,
-               "writesubtitles": True, "writeautomaticsub": True,
-               "subtitleslangs": settings["caption_languages"].split(","), "subtitlesformat": "vtt",
-               "progress_hooks": [cap]}
+    platform = "youtube" if "youtube.com" in source else "tiktok"
+    options = download_options(source, target, settings, cap)
     with OptionalCaptions(options) as downloader:
         info = downloader.extract_info(source, download=False)
         duration = info.get("duration") if info else None
@@ -136,7 +141,7 @@ def acquire(job, packet):
             raise ValueError("Source duration limit or unavailable duration")
         # Retain descriptive metadata only. Signed CDN URLs and headers stay out of packets.
         metadata = {key: info.get(key) for key in ("id", "title", "uploader", "description", "upload_date", "duration", "language")}
-        metadata["platform"] = "youtube" if "youtube.com" in source else "tiktok"
+        metadata["platform"] = platform
         metadata['download_height_requested'] = settings['download_height']
         resolved = info.get("webpage_url")
         if resolved:
@@ -159,6 +164,24 @@ def acquire(job, packet):
     if len(videos) != 1 or videos[0].stat().st_size > limit:
         raise RuntimeError("Download incomplete or size limit")
     return videos[0], metadata
+
+
+def download_options(source, target, settings, progress_hook):
+    platform = "youtube" if "youtube.com" in source else "tiktok"
+    options = {"quiet": True, "logger": Quiet(), "no_warnings": True,
+               "noplaylist": True, "cachedir": False, "socket_timeout": 30,
+               "retries": 3, "fragment_retries": 3, "extractor_retries": 3,
+               "max_filesize": settings["max_download_mib"] * 1048576,
+               "ffmpeg_location": str(Path(binary("ffmpeg")).parent),
+               "format": f"bestvideo[height<={settings['download_height']}]+bestaudio/best[height<={settings['download_height']}]",
+               "merge_output_format": "mp4", "outtmpl": str(Path(target) / "video.%(ext)s"),
+               "windowsfilenames": True, "writesubtitles": True, "writeautomaticsub": True,
+               "subtitleslangs": settings["caption_languages"].split(","), "subtitlesformat": "vtt",
+               "progress_hooks": [progress_hook]}
+    profile = APP_HOME / "login-profiles" / platform / "Default"
+    if profile.is_dir():
+        options["cookiesfrombrowser"] = ("chromium", str(profile), None, None)
+    return options
 
 
 def link_or_copy(source, target):
@@ -416,10 +439,11 @@ def worker(job):
         save_job(job, status, progress=100, finished_at=utc(), detail="; ".join(warnings))
     except Exception as error:
         status = error_label(error)
-        (packet / "diagnostics.txt").write_text(str(error)[-4000:], encoding="utf-8")
+        detail = safe_error_detail(error)
+        (packet / "diagnostics.txt").write_text(detail, encoding="utf-8")
         warnings.append(status)
         packet_manifest(job, packet, metadata, duration, audio, visual, status, warnings)
-        save_job(job, status, error=status, finished_at=utc())
+        save_job(job, status, error=status, detail=detail, finished_at=utc())
         return 1
     return 0
 
@@ -477,11 +501,9 @@ def main():
         sub.add_parser(command).add_argument("--job", required=True)
     add = sub.add_parser("add")
     add.add_argument("--source", required=True)
-    add.add_argument("--prompt")
     args = parser.parse_args()
     if args.command == "add":
-        p = {"origin": "manual_link", "search_prompt": args.prompt, "discovered_at": None, "discovery_session_id": None}
-        job = new_job(args.source, settings_load(), p)
+        job = new_job(args.source, settings_load())
         print(json.dumps({"job_id": job["id"], "job_file": str(Path(job["settings"]["output_dir"]) / "jobs" / (job["id"] + ".json"))}))
         return 0
     if args.command == "_worker":

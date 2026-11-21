@@ -72,8 +72,6 @@ if [[ "$REQ_HASH" != "$INSTALLED_HASH" ]]; then
   print -r -- "$REQ_HASH" > "$RUNTIME/requirements-macos.sha256"
 fi
 
-"$VENV_PYTHON" -m playwright install chromium
-
 print ""
 read -r "INSTALL_CODEX?Install or update the optional Codex skill in ~/.agents/skills? [Y/n] "
 if [[ -z "${INSTALL_CODEX:-}" || "$INSTALL_CODEX" == [Yy]* ]]; then

@@ -36,7 +36,7 @@ class EvidenceTests(unittest.TestCase):
             self.assertEqual(file.read_text(),'updated')
             self.assertFalse(list(packet.glob('*.tmp')))
             ui=app.Workbench.__new__(app.Workbench)
-            ui.analysis_process=None;ui.session_processors=[];ui.evidence_packet=packet
+            ui.analysis_process=None;ui.run_queue=False;ui.evidence_packet=packet
             ui.evidence_queue=[];ui.evidence_stopping=False
             ui.status=SimpleNamespace(set=lambda value:None)
             ui.packet_tree=SimpleNamespace(selection=lambda:['video'])

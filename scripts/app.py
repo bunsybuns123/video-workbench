@@ -3,7 +3,6 @@ import importlib.metadata
 import json
 import os
 from pathlib import Path
-import queue
 import runpy
 import subprocess
 import sys
@@ -11,7 +10,7 @@ import threading
 import time
 import tkinter as tk
 from tkinter import font as tkfont
-from tkinter import filedialog, messagebox, simpledialog, ttk
+from tkinter import filedialog, messagebox, ttk
 from projects import create_project, project_list, project_path, move_entry
 from analyzer import rebuild_index, packet_manifest, save_job
 from common import (APP_HOME, CONFIG, DEFAULTS, RUNTIME, atomic_json, data_dirs,
@@ -56,32 +55,28 @@ class Workbench:
         self.evidence_queue = []
         self.evidence_stopping = False
         self.run_queue = False
-        self.browser = None
-        self.browser_platform = None
-        self.browser_events = queue.Queue()
-        self.discovery_records = {}
-        self.session_processors = []
+        self.queue_run_ids = []
+        self.login_process = None
+        self.login_log = None
+        self.login_log_path = None
+        self.login_platform = None
         self.jobs = {}
         self.pages = {}
         self.active_view = "Analyzer"
         self.nav_buttons = {}
         self.status = tk.StringVar(value="Ready")
-        self.browser_status = tk.StringVar(value="Closed")
         self.notice = tk.StringVar(value="")
         self.project = tk.StringVar(value="Inbox")
         self.project_boxes = []
         self.refresh_projects()
         self.last_job_signature = None
-        self.last_discovery_refresh = 0
         self.configure_style()
         self.build_shell()
         self.build_analyzer()
         self.build_library()
-        self.build_scroller()
         self.build_settings()
         self.recover_jobs()
         self.refresh_library()
-        self.refresh_discoveries()
         self.show("Analyzer")
         root.protocol("WM_DELETE_WINDOW", self.close)
         root.after(300, self.tick)
@@ -114,7 +109,7 @@ class Workbench:
         side.pack_propagate(False)
         tk.Label(side, text="Video\nWorkbench", font=("Georgia", 20), bg=SIDEBAR, fg=TEXT,
                  justify="left", anchor="w").pack(fill="x", padx=25, pady=(35, 38))
-        for name in ("Analyzer", "Library", "Scroller", "Settings"):
+        for name in ("Analyzer", "Library", "Settings"):
             button = tk.Button(side, text=name, font=(self.ui_font, 11), anchor="w", relief="flat", bd=0,
                                bg=SIDEBAR, fg=MUTED, activebackground=BG, padx=18, pady=13,
                                command=lambda n=name: self.show(n), cursor="hand2")
@@ -124,7 +119,7 @@ class Workbench:
                  wraplength=180, justify="left").pack(side="bottom", anchor="w", padx=25, pady=28)
         self.main = ttk.Frame(self.root, padding=(34, 28, 34, 18))
         self.main.pack(side="left", fill="both", expand=True)
-        for name in ("Analyzer", "Library", "Scroller", "Settings"):
+        for name in ("Analyzer", "Library", "Settings"):
             self.pages[name] = ttk.Frame(self.main)
 
     def show(self, name):
@@ -135,8 +130,6 @@ class Workbench:
         self.pages[name].pack(fill="both", expand=True)
         if name == "Library":
             self.refresh_library()
-        if name == "Scroller":
-            self.refresh_discoveries()
 
     def heading(self, page, title):
         ttk.Label(page, text=title, style="Title.TLabel").pack(anchor="w", pady=(0, 25))
@@ -171,15 +164,54 @@ class Workbench:
         return self.project_map[self.project.get()]["id"]
 
     def new_project(self):
-        name = simpledialog.askstring("New project", "Name", parent=self.root)
-        if name:
+        current = getattr(self, "project_dialog", None)
+        if current is not None and current.winfo_exists():
+            current.lift()
+            current.focus_force()
+            return
+        dialog = tk.Toplevel(self.root)
+        self.project_dialog = dialog
+        dialog.title("New project")
+        dialog.transient(self.root)
+        dialog.resizable(False, False)
+        body = ttk.Frame(dialog, padding=22)
+        body.pack(fill="both", expand=True)
+        ttk.Label(body, text="Project name").pack(anchor="w", pady=(0, 8))
+        name = tk.StringVar()
+        entry = ttk.Entry(body, textvariable=name, width=36)
+        entry.pack(fill="x")
+        error = tk.StringVar(value="")
+        ttk.Label(body, textvariable=error, style="Muted.TLabel").pack(anchor="w", pady=(6, 0))
+        actions = ttk.Frame(body)
+        actions.pack(fill="x", pady=(18, 0))
+
+        def create():
             try:
-                folder = create_project(self.settings, name)
+                folder = create_project(self.settings, name.get())
                 self.refresh_projects()
                 self.project.set(next(k for k, p in self.project_map.items() if p["id"] == folder.name))
+            except (ValueError, OSError) as exception:
+                error.set(str(exception))
+                return
+            dialog.destroy()
+            try:
                 self.refresh_library()
-            except ValueError as error:
-                messagebox.showerror("Project", str(error))
+                self.refresh_jobs()
+                self.status.set("Project created")
+            except (ValueError, OSError) as exception:
+                self.status.set("Project created. Library refresh failed: " + str(exception))
+
+        ttk.Button(actions, text="Cancel", command=dialog.destroy).pack(side="right")
+        ttk.Button(actions, text="Create", command=create, style="Accent.TButton").pack(side="right", padx=(0, 8))
+        dialog.bind("<Return>", lambda _: create())
+        dialog.bind("<Escape>", lambda _: dialog.destroy())
+        dialog.protocol("WM_DELETE_WINDOW", dialog.destroy)
+        dialog.update_idletasks()
+        x = self.root.winfo_rootx() + max(0, (self.root.winfo_width() - dialog.winfo_width()) // 2)
+        y = self.root.winfo_rooty() + max(0, (self.root.winfo_height() - dialog.winfo_height()) // 2)
+        dialog.geometry(f"+{x}+{y}")
+        dialog.grab_set()
+        entry.focus_set()
 
     def label(self, parent, value):
         ttk.Label(parent, text=value, style="Muted.TLabel").pack(anchor="w", pady=(0, 7))
@@ -207,21 +239,22 @@ class Workbench:
         page = self.pages["Analyzer"]
         self.heading(page, "Analyzer")
         self.project_picker(page)
-        self.label(page, "Video links")
-        self.links = self.text_box(page, 3)
-        row = ttk.Frame(page)
-        row.pack(fill="x", pady=(15, 0))
-        ttk.Label(row, text="Search prompt", style="Muted.TLabel").pack(side="left")
-        ttk.Label(row, text="Optional", style="Muted.TLabel").pack(side="right")
-        self.prompt = ttk.Entry(page)
-        self.prompt.pack(fill="x", pady=(7, 15))
+        self.label(page, "Video link")
+        input_row = ttk.Frame(page)
+        input_row.pack(fill="x")
+        self.link = tk.StringVar()
+        self.link_entry = ttk.Entry(input_row, textvariable=self.link)
+        self.link_entry.pack(side="left", fill="x", expand=True)
+        self.link_entry.bind("<Return>", lambda _: self.add_link())
+        ttk.Button(input_row, text="Add to queue", command=self.add_link).pack(side="left", padx=(9, 0))
         actions = ttk.Frame(page)
-        actions.pack(fill="x", pady=(0, 24))
-        ttk.Button(actions, text="Analyze", style="Accent.TButton", command=self.add_links).pack(side="left")
-        ttk.Button(actions, text="Add files", command=self.add_files).pack(side="left", padx=9)
-        ttk.Button(actions, text="Run queue", command=self.start_queue).pack(side="right")
+        actions.pack(fill="x", pady=(12, 22))
+        ttk.Button(actions, text="Add files", command=self.add_files).pack(side="left")
+        self.analyze_button = ttk.Button(actions, text="Analyze", style="Accent.TButton", command=self.start_queue)
+        self.analyze_button.pack(side="right")
         self.label(page, "Queue")
-        self.job_tree = self.table(page, [("source", "Source", 350), ("status", "Status", 150), ("date", "Queued", 170)], 3)
+        self.job_tree = self.table(page, [("source", "Video", 420), ("status", "Status", 145), ("date", "Added", 190)], 7)
+        self.job_tree.bind("<<TreeviewSelect>>", self.select_job)
         self.progress = ttk.Progressbar(page, mode="determinate")
         self.progress.pack(fill="x", pady=(16, 10))
         footer = ttk.Frame(page)
@@ -240,8 +273,8 @@ class Workbench:
         self.filter.pack(side="left", fill="x", expand=True)
         self.filter.bind("<KeyRelease>", lambda _: self.refresh_library(False))
         ttk.Button(top, text="Refresh", command=self.refresh_library).pack(side="right", padx=(10, 0))
-        self.packet_tree = self.table(page, [("title", "Title", 260), ("prompt", "Search prompt", 230),
-                                             ("date", "Processed", 150), ("status", "Collection / Reading / Review", 245)], 6)
+        self.packet_tree = self.table(page, [("title", "Title", 300), ("date", "Processed", 170),
+                                             ("status", "Collection / Reading / Review", 290)], 6)
         self.packet_tree.bind("<<TreeviewSelect>>", self.select_packet)
         self.packet_tree.configure(show="tree headings")
         self.packet_tree.column("#0", width=26, minwidth=26, stretch=False)
@@ -261,33 +294,6 @@ class Workbench:
         ttk.Button(reading, text="Open reading", command=self.open_reading).pack(side="left")
         ttk.Button(reading, text="Build reading", command=self.build_reading).pack(side="left", padx=9)
         ttk.Button(reading, text="Stop reading build", command=self.stop_reading).pack(side="left")
-
-    def build_scroller(self):
-        page = self.pages["Scroller"]
-        self.heading(page, "Scroller")
-        self.project_picker(page)
-        top = ttk.Frame(page)
-        top.pack(fill="x", pady=(0, 16))
-        self.platform = tk.StringVar(value="TikTok")
-        ttk.Combobox(top, textvariable=self.platform, values=["TikTok", "YouTube"], state="readonly", width=16).pack(side="left")
-        ttk.Label(top, textvariable=self.browser_status, style="Muted.TLabel").pack(side="right")
-        self.label(page, "Keywords")
-        self.keywords = self.text_box(page, 2)
-        actions = ttk.Frame(page)
-        actions.pack(fill="x", pady=(15, 23))
-        ttk.Button(actions, text="Open browser", command=self.open_browser).pack(side="left")
-        ttk.Button(actions, text="Start", style="Accent.TButton", command=self.start_scroll).pack(side="left", padx=9)
-        ttk.Button(actions, text="Pause", command=lambda: self.browser_command("pause")).pack(side="left")
-        ttk.Button(actions, text="Resume", command=lambda: self.browser_command("resume")).pack(side="left", padx=9)
-        ttk.Button(actions, text="Stop", command=lambda: self.browser_command("stop")).pack(side="right")
-        self.label(page, "Discovered links")
-        self.discovery_tree = self.table(page, [("title", "Title", 270), ("prompt", "Search prompt", 200),
-                                                ("platform", "Platform", 90), ("date", "Discovered", 160)], 4)
-        footer = ttk.Frame(page)
-        footer.pack(fill="x", pady=(18, 0))
-        ttk.Button(footer, text="Process selected", command=self.queue_discoveries).pack(side="left")
-        ttk.Button(footer, text="Refresh", command=self.refresh_discoveries).pack(side="left", padx=9)
-        ttk.Button(footer, text="Open discoveries", command=lambda: self.open_folder(self.data / "discoveries")).pack(side="right")
 
     def build_settings(self):
         page = self.pages["Settings"]
@@ -317,9 +323,7 @@ class Workbench:
                   ("ocr_engine", "OCR engine"), ("ocr_language", "Screen text language"),
                   ("speech_vocabulary", "Speech vocabulary"),
                   ("max_duration_minutes", "Video limit (minutes)"), ("max_download_mib", "Download limit (MiB)"),
-                  ("max_packet_mib", "Packet limit (MiB)"), ("job_timeout_minutes", "Processing limit (minutes)"),
-                  ("scroll_interval", "Scroll interval (seconds)"), ("scroll_steps", "Scrolls per keyword"),
-                  ("scroll_minutes", "Scroller limit (minutes)"), ("scroll_max_results", "Result limit")]
+                  ("max_packet_mib", "Packet limit (MiB)"), ("job_timeout_minutes", "Processing limit (minutes)")]
         for i, (key, label) in enumerate(fields):
             row = ttk.Frame(form)
             row.pack(fill="x", pady=6)
@@ -338,7 +342,18 @@ class Workbench:
             if key == "output_dir":
                 ttk.Button(row, text="Browse", command=self.browse_output).pack(side="right", padx=8)
 
+        self.login_frame = ttk.LabelFrame(form, text="Video site access", padding=12)
+        ttk.Label(self.login_frame, text="Sign in with the app browser, then close it and retry the video.",
+                  style="Muted.TLabel", wraplength=760).pack(anchor="w")
+        login_row = ttk.Frame(self.login_frame)
+        login_row.pack(fill="x", pady=(8, 0))
+        self.login_button = ttk.Button(login_row, text="Open sign-in browser", command=self.open_site_login)
+        self.login_button.pack(side="left")
+        self.login_status = tk.StringVar(value="")
+        ttk.Label(login_row, textvariable=self.login_status, style="Muted.TLabel", wraplength=520).pack(side="left", padx=10)
+
         links = ttk.LabelFrame(form, text="Obsidian and Codex", padding=12)
+        self.settings_links = links
         links.pack(fill="x", pady=(18, 8))
         vault_row = ttk.Frame(links)
         vault_row.pack(fill="x")
@@ -394,8 +409,8 @@ class Workbench:
             self.settings_status.set("Codex skill install failed: " + str(error))
 
     def save_settings(self):
-        if self.analysis_process or self.evidence_process or (self.browser and self.browser.poll() is None):
-            messagebox.showinfo("Settings", "Stop active jobs and browser first")
+        if self.analysis_process or self.evidence_process or (self.login_process and self.login_process.poll() is None):
+            messagebox.showinfo("Settings", "Stop active jobs and sign-in browser first")
             return
         try:
             values = {k: v.get() for k, v in self.setting_vars.items()}
@@ -407,7 +422,6 @@ class Workbench:
             self.refresh_projects()
             self.reload_jobs()
             self.refresh_library()
-            self.refresh_discoveries()
             self.settings_status.set("Saved")
         except (ValueError, OSError) as error:
             self.settings_status.set(str(error))
@@ -422,14 +436,14 @@ class Workbench:
         cached = list((RUNTIME / "models" / "hub").glob("models--Systran--faster-whisper-*/snapshots/*/model.bin"))
         models = sorted({p.parents[2].name.split("faster-whisper-")[-1] for p in cached})
         self.settings_status.set("\n".join(versions + ["Cached models: " + (", ".join(models) or "none"),
-                                                      "Output: " + str(self.data), "Profile: " + str(APP_HOME / "browsers"),
+                                                      "Output: " + str(self.data), "Sign-in profile: " + str(APP_HOME / "login-profiles"),
                                                       ]))
 
     def cache_selected_model(self):
         if self.model_download_busy:
             self.settings_status.set("A model download is already running")
             return
-        if self.analysis_process or self.run_queue or any(p.busy() for p in self.session_processors):
+        if self.analysis_process or self.run_queue:
             self.settings_status.set("Stop active analysis before caching a model")
             return
         model = self.setting_vars["model"].get()
@@ -468,32 +482,58 @@ class Workbench:
 
     def add_files(self):
         files = filedialog.askopenfilenames(title="Video files", filetypes=[("Video", "*.mp4 *.mkv *.webm *.mov *.m4v *.avi")])
-        for file in files:
-            self.links.insert("end", ("\n" if self.links.get("1.0", "end").strip() else "") + file)
-
-    def add_links(self):
-        sources = list(dict.fromkeys(line.strip() for line in self.links.get("1.0", "end").splitlines() if line.strip()))
-        if not sources:
-            self.status.set("Video links required")
+        if not files:
             return
-        if len(sources) > 100:
+        queued = sum(1 for job in self.jobs.values()
+                     if (job.get("project_id") or "inbox") == self.selected_project() and job.get("status") == "queued")
+        if queued + len(files) > 100:
             self.status.set("Queue limit: 100")
             return
-        # Validate the entire input before creating any jobs.
-        from common import canonical_source
-        try:
-            sources = [canonical_source(s) for s in sources]
-            for source in sources:
-                job = new_job(source, self.settings, {"origin": "manual_link", "search_prompt": self.prompt.get().strip() or None,
-                                                      "discovered_at": None, "discovery_session_id": None}, self.selected_project())
+        added = 0
+        failure = None
+        for source in files:
+            try:
+                job = new_job(source, self.settings, project_id=self.selected_project())
                 self.jobs[job["id"]] = job
-            self.links.delete("1.0", "end")
-            self.start_queue()
+                added += 1
+            except (ValueError, OSError) as error:
+                failure = str(error)
+                break
+        if added:
+            self.refresh_jobs()
+        if failure:
+            prefix = f"Added {added} file" + ("" if added == 1 else "s") + ". " if added else ""
+            self.status.set(prefix + "Could not add the remaining files: " + failure)
+        elif added:
+            self.status.set(f"Added {added} file" + ("" if added == 1 else "s") + " to queue")
+
+    def add_link(self):
+        source = self.link.get().strip()
+        if not source:
+            self.status.set("Enter a video link")
+            return
+        queued = sum(1 for job in self.jobs.values()
+                     if (job.get("project_id") or "inbox") == self.selected_project() and job.get("status") == "queued")
+        if queued >= 100:
+            self.status.set("Queue limit: 100")
+            return
+        try:
+            job = new_job(source, self.settings, project_id=self.selected_project())
         except (ValueError, OSError) as error:
             self.status.set(str(error))
+            return
+        self.jobs[job["id"]] = job
+        self.link.set("")
+        self.refresh_jobs()
+        self.status.set("Added to queue")
 
     def reload_jobs(self):
-        self.jobs = {p.stem: load_json(p) for p in (self.data / 'jobs').glob('*.json') if load_json(p, {}).get('status') != 'removed'}
+        jobs = {}
+        for path in (self.data / "jobs").glob("*.json"):
+            job = load_json(path)
+            if job and job.get("status") != "removed":
+                jobs[path.stem] = job
+        self.jobs = jobs
         self.refresh_jobs()
 
     def recover_jobs(self):
@@ -510,25 +550,89 @@ class Workbench:
                                     {"full_audio_processed": False}, {"full_timeline_sampled": False}, "interrupted", ["App closed during processing"])
             self.jobs[job["id"]] = job
         self.refresh_jobs()
+        self.refresh_login_access()
 
     def refresh_jobs(self):
         selected = self.job_tree.selection()
         self.job_tree.delete(*self.job_tree.get_children())
-        for identifier, job in self.jobs.items():
-            if (job.get("project_id") or "inbox") != self.selected_project():
-                continue
+        project_jobs = [(identifier, job) for identifier, job in self.jobs.items()
+                        if (job.get("project_id") or "inbox") == self.selected_project()]
+        order = lambda item: (str(item[1].get("queue_order", item[1].get("created_at", ""))), item[0])
+        pending = sorted((item for item in project_jobs if item[1].get("status") not in TERMINAL), key=order)
+        history = sorted((item for item in project_jobs if item[1].get("status") in TERMINAL), key=order, reverse=True)[:20]
+        for identifier, job in pending + history:
             source = job["source"] if job["source"].startswith("https://") else Path(job["source"]).name
             self.job_tree.insert("", "end", iid=identifier, values=(source, job["status"].replace("_", " ").capitalize(), job["created_at"].replace("T", " ").replace("+00:00", " UTC")))
         for item in selected:
             if self.job_tree.exists(item):
                 self.job_tree.selection_add(item)
+        self.refresh_login_access()
+
+    def refresh_login_access(self):
+        failed = sorted((job for job in self.jobs.values()
+                         if job.get("error") == "sign_in_required" or job.get("status") == "sign_in_required"),
+                        key=lambda job: job.get("created_at", ""), reverse=True)
+        platform = None
+        if failed:
+            source = failed[0].get("source", "")
+            platform = "youtube" if "youtube" in source else "tiktok"
+        self.login_platform = platform
+        if not hasattr(self, "login_frame"):
+            return
+        if platform:
+            if not self.login_frame.winfo_manager():
+                self.login_frame.pack(fill="x", pady=(12, 8), before=self.settings_links)
+            self.login_button.configure(text="Open " + platform.title() + " sign-in")
+        else:
+            self.login_frame.pack_forget()
+
+    def open_site_login(self):
+        if not self.login_platform:
+            return
+        if self.login_process and self.login_process.poll() is None:
+            self.login_status.set("Sign-in browser is open")
+            return
+        try:
+            APP_HOME.mkdir(parents=True, exist_ok=True)
+            self.login_log_path = APP_HOME / (self.login_platform + "-sign-in.private.log")
+            self.login_log = self.login_log_path.open("wb")
+            self.login_process = spawn("site_login.py", ["--platform", self.login_platform],
+                                      stdout=self.login_log, stderr=self.login_log)
+            self.login_status.set("Preparing sign-in browser")
+        except (OSError, ValueError) as error:
+            if self.login_log:
+                self.login_log.close()
+                self.login_log = None
+            self.login_status.set("Could not open browser: " + str(error))
+
+    def select_job(self, _=None):
+        selected = self.job_tree.selection()
+        if not selected:
+            return
+        job = self.jobs.get(selected[0], {})
+        detail = job.get("detail") or job.get("error") or job.get("status", "").replace("_", " ").capitalize()
+        self.status.set(detail)
 
     def start_queue(self):
         if self.model_download_busy:
             self.status.set("Wait for model caching to finish")
             return
+        if self.login_process and self.login_process.poll() is None:
+            self.status.set("Close the sign-in browser before analyzing")
+            return
+        if self.run_queue:
+            self.status.set("Analysis is already running")
+            return
+        project_id = self.selected_project()
+        self.queue_run_ids = [identifier for identifier, job in sorted(
+            self.jobs.items(), key=lambda item: (str(item[1].get("queue_order", item[1].get("created_at", ""))), item[0]))
+            if job.get("status") == "queued" and (job.get("project_id") or "inbox") == project_id]
+        if not self.queue_run_ids:
+            self.status.set("Queue is empty")
+            return
         self.run_queue = True
-        self.status.set("Queued")
+        self.analyze_button.configure(state="disabled")
+        self.status.set(f"Analyzing {len(self.queue_run_ids)} video" + ("" if len(self.queue_run_ids) == 1 else "s"))
         self.refresh_jobs()
 
     def cancel_selected(self):
@@ -546,7 +650,12 @@ class Workbench:
 
     def retry_selected(self):
         count = 0
+        remaining = 100 - sum(1 for job in self.jobs.values()
+                              if (job.get("project_id") or "inbox") == self.selected_project()
+                              and job.get("status") == "queued")
         for identifier in self.job_tree.selection():
+            if remaining <= 0:
+                break
             old = self.jobs[identifier]
             if old["status"] not in TERMINAL - {"complete"}:
                 continue
@@ -556,8 +665,12 @@ class Workbench:
             save_job(job)
             self.jobs[job["id"]] = job
             count += 1
+            remaining -= 1
         if count:
-            self.start_queue()
+            self.status.set(f"Requeued {count} video" + ("" if count == 1 else "s"))
+            self.refresh_jobs()
+        elif remaining <= 0:
+            self.status.set("Queue limit: 100")
         else:
             self.status.set("Select a failed or partial job")
 
@@ -585,7 +698,7 @@ class Workbench:
             if text and text not in json.dumps(p, ensure_ascii=False).casefold():
                 continue
             parent = "session:" + p["session_id"] if p.get("session_id") and self.packet_tree.exists("session:" + p["session_id"]) else ""
-            self.packet_tree.insert(parent, "end", iid=p["packet_id"], values=(p["title"] or p["packet_id"], p["search_prompt"] or "Manual link",
+            self.packet_tree.insert(parent, "end", iid=p["packet_id"], values=(p["title"] or p["packet_id"],
                                                                                 (p["processed_at"] or "").replace("T", " ").replace("+00:00", " UTC"),
                                                                                 p["status"] if p['packet_id'].startswith('session:') else ' / '.join(("Collected" if p['status']=='complete' else p['status'],p.get('evidence_status','not built').replace('_',' '),p.get('review_status','unreviewed')))))
         for item in selected:
@@ -625,7 +738,7 @@ class Workbench:
                 self.status.set('Build reading first' if not file.is_file() else 'Reading build incomplete')
 
     def build_reading(self):
-        if self.analysis_process or any(p.busy() for p in self.session_processors):
+        if self.analysis_process or self.run_queue:
             self.status.set('Wait for collection to finish')
             return
         selected = self.packet_tree.selection()
@@ -692,92 +805,6 @@ class Workbench:
         except (ValueError, OSError) as error:
             messagebox.showerror("Undo", str(error))
 
-    def open_browser(self):
-        platform = self.platform.get().lower()
-        if self.browser and self.browser.poll() is None:
-            if platform != self.browser_platform:
-                self.browser_status.set("Stop browser before switching platform")
-            return
-        self.browser_platform = platform
-        self.browser = spawn("scroller.py", ["--platform", platform], stdin=subprocess.PIPE,
-                             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, encoding="utf-8", bufsize=1)
-        process = self.browser
-        self.browser_status.set("Opening")
-
-        def receive():
-            for line in process.stdout:
-                try:
-                    self.browser_events.put(json.loads(line))
-                except ValueError:
-                    pass
-        threading.Thread(target=receive, daemon=True).start()
-
-    def browser_command(self, action, **data):
-        if not self.browser or self.browser.poll() is not None:
-            self.browser_status.set("Open browser first")
-            return
-        try:
-            self.browser.stdin.write(json.dumps({"action": action, **data}) + "\n")
-            self.browser.stdin.flush()
-        except (OSError, ValueError):
-            self.browser_status.set("Browser closed")
-
-    def start_scroll(self):
-        if self.model_download_busy:
-            self.browser_status.set("Wait for model caching to finish")
-            return
-        prompts = [p.strip() for p in self.keywords.get("1.0", "end").splitlines() if p.strip()]
-        if not prompts or len(prompts) > 20 or any(len(p) > 200 for p in prompts):
-            self.browser_status.set("Keywords required: 1 to 20")
-            return
-        if not self.browser or self.browser.poll() is not None:
-            self.open_browser()
-        elif self.browser_platform != self.platform.get().lower():
-            self.browser_status.set("Stop browser before switching platform")
-            return
-        self.browser_command("start", prompts=prompts, settings=self.settings, project_id=self.selected_project(), analyze=True)
-
-    def refresh_discoveries(self):
-        if not hasattr(self, "discovery_tree"):
-            return
-        selected = self.discovery_tree.selection()
-        self.discovery_tree.delete(*self.discovery_tree.get_children())
-        self.discovery_records.clear()
-        for file in sorted((self.data / "discoveries").glob("*.json"), reverse=True):
-            session = load_json(file, {})
-            for i, record in enumerate(session.get("results", [])):
-                identifier = file.stem + ":" + str(i)
-                self.discovery_records[identifier] = record
-                self.discovery_tree.insert("", "end", iid=identifier, values=(record["title"] or record["url"], ", ".join(record.get("search_prompts", [record["search_prompt"]])), record["platform"], record["discovered_at"].replace("T", " ").replace("+00:00", " UTC")))
-        for item in selected:
-            if self.discovery_tree.exists(item):
-                self.discovery_tree.selection_add(item)
-
-    def queue_discoveries(self):
-        if self.model_download_busy:
-            self.status.set("Wait for model caching to finish")
-            return
-        from sessions import SessionQueue
-        import uuid
-        selected = self.discovery_tree.selection()
-        records = []
-        seen = set()
-        for identifier in selected:
-            record = dict(self.discovery_records[identifier])
-            if record["url"] not in seen and not record.get("job_id"):
-                records.append(record)
-                seen.add(record["url"])
-        if records:
-            session = {"id": time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()) + "-" + uuid.uuid4().hex[:8],
-                       "title": "Selected videos " + utc(), "project_id": self.selected_project(), "settings": self.settings,
-                       "platform": "mixed", "search_prompts": list(dict.fromkeys(r["search_prompt"] for r in records)),
-                       "started_at": utc(), "status": "processing", "results": records}
-            processor = SessionQueue(session)
-            processor.enqueue()
-            self.session_processors.append(processor)
-            self.reload_jobs()
-            self.show("Library")
-
     def tick(self):
         try:
             self.tick_workers()
@@ -786,6 +813,16 @@ class Workbench:
         self.root.after(400, self.tick)
 
     def tick_workers(self):
+        if self.login_process and self.login_process.poll() is not None:
+            self.login_process = None
+            if self.login_log:
+                self.login_log.close()
+                self.login_log = None
+            output = self.login_log_path.read_text(encoding="utf-8", errors="replace").strip() if self.login_log_path and self.login_log_path.is_file() else ""
+            if output:
+                self.login_status.set("Sign-in browser error: " + output.splitlines()[-1][:400])
+            else:
+                self.login_status.set("Browser closed. Retry the video.")
         if self.evidence_process:
             status = load_json(self.evidence_packet/'evidence'/'status.json', {})
             self.status.set('Reading: ' + (str(status.get('completed_screens',0))+' / '+str(status.get('total_screens','?')) if status.get('status')=='building' else status.get('status','starting').replace('_',' ')))
@@ -807,14 +844,6 @@ class Workbench:
             (folder/'STOP').unlink(missing_ok=True)
             self.evidence_log = (folder/'build.private.log').open('wb')
             self.evidence_process = spawn('evidence.py', ['build','--packet',self.evidence_packet,'--refresh-media'],stdout=self.evidence_log,stderr=self.evidence_log)
-        for processor in list(self.session_processors):
-            if not processor.tick():
-                processor.session["status"] = processor.outcome()
-                processor.session["finished_at"] = utc()
-                processor.save()
-                self.session_processors.remove(processor)
-                self.reload_jobs()
-                self.refresh_library()
         if self.analysis_process:
             path = self.data / "jobs" / (self.analysis_job["id"] + ".json")
             job = load_json(path, self.analysis_job)
@@ -830,53 +859,59 @@ class Workbench:
                     save_job(job, "interrupted", finished_at=utc())
                 self.analysis_log.close()
                 self.analysis_process = self.analysis_job = self.analysis_log = None
+                if job.get("status") == "sign_in_required":
+                    self.run_queue = False
+                    self.queue_run_ids.clear()
+                    self.analyze_button.configure(state="normal")
+                    self.status.set("Sign-in required. Open Settings.")
                 self.refresh_library()
         if self.run_queue and not self.analysis_process and not self.evidence_process and not self.evidence_queue:
-            job = next((j for j in self.jobs.values() if j["status"] == "queued" and not j.get("session_id")), None)
-            if job:
+            while self.queue_run_ids:
+                identifier = self.queue_run_ids.pop(0)
+                job = self.jobs.get(identifier)
+                if not job:
+                    continue
+                job = load_json(self.data / "jobs" / (identifier + ".json"), job)
+                self.jobs[identifier] = job
+                if job.get("status") != "queued":
+                    continue
+                log = None
+                try:
+                    log = (self.data / "jobs" / (identifier + ".private.log")).open("wb")
+                    process = spawn("analyzer.py", ["run", "--job", self.data / "jobs" / (identifier + ".json")], stdout=log, stderr=log)
+                except (OSError, ValueError, RuntimeError) as error:
+                    if log:
+                        log.close()
+                    detail = "Could not start analysis: " + str(error)[:400]
+                    save_job(job, "failed", error="failed", detail=detail, finished_at=utc())
+                    self.jobs[identifier] = job
+                    continue
                 self.analysis_job = job
-                self.analysis_log = (self.data / "jobs" / (job["id"] + ".private.log")).open("wb")
-                self.analysis_process = spawn("analyzer.py", ["run", "--job", self.data / "jobs" / (job["id"] + ".json")], stdout=self.analysis_log, stderr=self.analysis_log)
-            else:
+                self.analysis_log = log
+                self.analysis_process = process
+                break
+            if not self.analysis_process and not self.queue_run_ids:
                 self.run_queue = False
-        while not self.browser_events.empty():
-            event = self.browser_events.get_nowait()
-            if event["event"] == "status":
-                self.browser_status.set(event["status"])
-                if event.get("attention"):
-                    self.root.bell()
-                    self.status.set(event["status"])
-                    self.notice.set((self.browser_platform or "Browser").capitalize() + "\n" + event["status"])
-                    self.root.title("Video Workbench | " + event["status"])
-                elif event["status"] in {"Browser closed", "Browser ready", "Ready to resume", "Running"}:
-                    self.notice.set("")
-                    self.root.title("Video Workbench")
-            if event["event"] in {"results", "session"}:
-                if time.monotonic() - self.last_discovery_refresh > 1:
-                    self.reload_jobs()
-                    self.refresh_discoveries()
-                    self.last_discovery_refresh = time.monotonic()
-
+                self.analyze_button.configure(state="normal")
+                self.status.set("Analysis finished")
     def close(self):
         self.closing = True
         self.run_queue = False
+        self.queue_run_ids.clear()
         self.stop_reading()
-        for processor in self.session_processors:
-            processor.stop()
-            processor.session["status"] = "stopped"
-            processor.save()
         if self.analysis_job:
             packet = Path(self.analysis_job["packet_path"])
             packet.mkdir(parents=True, exist_ok=True)
             (packet / "STOP").touch()
-        if self.browser and self.browser.poll() is None:
-            self.browser_command("stop")
+        processes = (self.analysis_process, self.login_process, self.evidence_process)
         deadline = time.monotonic() + 3
-        while time.monotonic() < deadline and any(p and p.poll() is None for p in (self.analysis_process, self.browser, self.evidence_process)):
+        while time.monotonic() < deadline and any(p and p.poll() is None for p in processes):
             time.sleep(.1)
-        for process in (self.analysis_process, self.browser, self.evidence_process):
+        for process in processes:
             if process and process.poll() is None:
                 stop_process(process)
+        if self.login_log:
+            self.login_log.close()
         if self.analysis_log:
             self.analysis_log.close()
         if self.evidence_log:
