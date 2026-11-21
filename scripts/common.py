@@ -184,6 +184,11 @@ def new_job(source, settings, provenance=None, project_id="inbox", session_id=No
 def binary(name):
     candidate = RUNTIME / "ffmpeg" / "bin" / (name + (".exe" if os.name == "nt" else ""))
     found = str(candidate) if candidate.is_file() else shutil.which(name)
+    if not found and sys.platform == "darwin":
+        found = next((str(path) for path in (Path("/opt/homebrew/bin") / name,
+                                               Path("/usr/local/bin") / name,
+                                               Path("/opt/homebrew/opt/ffmpeg/bin") / name,
+                                               Path("/usr/local/opt/ffmpeg/bin") / name) if path.is_file()), None)
     if not found and name == "ffmpeg":
         try:
             import imageio_ffmpeg

@@ -52,7 +52,7 @@ RESOURCES="$APP_BUNDLE/Contents/Resources"
 SOURCE="$RESOURCES/video-rabbit-holes"
 RUNTIME="$HOME/.codex/video-research-runtime"
 PYTHON="$RUNTIME/venv/bin/python"
-if [[ ! -x "$PYTHON" || ! -f "$RUNTIME/setup-complete" ]]; then
+if [[ ! -x "$PYTHON" || ! -f "$RUNTIME/setup-complete" || ( ! -x /opt/homebrew/bin/ffprobe && ! -x /usr/local/bin/ffprobe ) ]]; then
   /usr/bin/osascript - "$RESOURCES/setup_macos.command" "$APP_BUNDLE" <<'APPLESCRIPT'
 on run argv
     set setupPath to item 1 of argv

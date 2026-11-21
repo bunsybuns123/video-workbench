@@ -59,6 +59,15 @@ if ! "$PYTHON" -c 'import tkinter' >/dev/null 2>&1; then
   "$BREW" install python-tk@3.12
 fi
 
+if ! command -v ffmpeg >/dev/null 2>&1 || ! command -v ffprobe >/dev/null 2>&1; then
+  if [[ -z "$BREW" ]]; then
+    print "FFmpeg and FFprobe are required. Install Homebrew, then open Video Workbench again."
+    read -r "REPLY?Press Return to close. "
+    exit 1
+  fi
+  "$BREW" install ffmpeg
+fi
+
 mkdir -p "$RUNTIME"
 if [[ ! -x "$VENV/bin/python" ]]; then
   "$PYTHON" -m venv "$VENV"
