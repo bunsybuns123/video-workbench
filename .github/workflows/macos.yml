@@ -36,6 +36,12 @@ jobs:
       - name: Build the Mac app bundle
         run: python scripts/package_macos.py --output dist
 
+      - name: Check app launcher and bundle metadata
+        run: |
+          zsh -n scripts/setup_macos.command
+          zsh -n "dist/Video Workbench.app/Contents/MacOS/VideoWorkbench"
+          plutil -lint "dist/Video Workbench.app/Contents/Info.plist"
+
       - name: Check packaged source size
         run: test "$(du -sk "dist/Video Workbench.app" | cut -f1)" -lt 20480
 
