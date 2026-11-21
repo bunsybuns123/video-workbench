@@ -1,0 +1,12 @@
+yt-dlp==2026.10.21
+faster-whisper==1.2.1
+av==18.1.0
+Pillow==13.0.0
+numpy==2.5.4
+imageio-ffmpeg==0.6.0
+playwright==1.64.1
+rapidocr-onnxruntime==1.4.4
+winrt-Windows.Media.Ocr==4!10.0.28000.2705; sys_platform == 'win32'
+winrt-Windows.Graphics.Imaging==4!10.0.28000.2705; sys_platform == 'win32'
+winrt-Windows.Storage.Streams==4!10.0.28000.2705; sys_platform == 'win32'
+winrt-Windows.Globalization==4!10.0.28000.2705; sys_platform == 'win32'
