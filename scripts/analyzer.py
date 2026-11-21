@@ -172,7 +172,7 @@ def download_options(source, target, settings, progress_hook):
                "noplaylist": True, "cachedir": False, "socket_timeout": 30,
                "retries": 3, "fragment_retries": 3, "extractor_retries": 3,
                "max_filesize": settings["max_download_mib"] * 1048576,
-               "ffmpeg_location": str(Path(binary("ffmpeg")).parent),
+               "ffmpeg_location": binary("ffmpeg"),
                "format": f"bestvideo[height<={settings['download_height']}]+bestaudio/best[height<={settings['download_height']}]",
                "merge_output_format": "mp4", "outtmpl": str(Path(target) / "video.%(ext)s"),
                "windowsfilenames": True, "writesubtitles": True, "writeautomaticsub": True,
