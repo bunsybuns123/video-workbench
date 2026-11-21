@@ -21,8 +21,13 @@ def build(output):
     shutil.copytree(
         ROOT,
         source,
-        ignore=shutil.ignore_patterns(".git", "__pycache__", "*.pyc", "tests", "dist", "build"),
+        ignore=shutil.ignore_patterns(".git", ".venv", "venv", "__pycache__", "*.pyc",
+                                     ".pytest_cache", ".mypy_cache", "tests", "dist", "build"),
     )
+    payload_bytes = sum(file.stat().st_size for file in source.rglob("*") if file.is_file())
+    if payload_bytes > 20 * 1024 * 1024:
+        shutil.rmtree(app)
+        raise RuntimeError(f"App source payload is unexpectedly large: {payload_bytes} bytes")
     shutil.copy2(Path(__file__).with_name("setup_macos.command"), resources / "setup_macos.command")
     (resources / "setup_macos.command").chmod(0o755)
     info = {

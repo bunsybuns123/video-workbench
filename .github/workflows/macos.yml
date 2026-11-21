@@ -36,6 +36,9 @@ jobs:
       - name: Build the Mac app bundle
         run: python scripts/package_macos.py --output dist
 
+      - name: Check packaged source size
+        run: test "$(du -sk "dist/Video Workbench.app" | cut -f1)" -lt 20480
+
       - name: Create the disk image
         run: |
           mkdir -p stage
