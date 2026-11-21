@@ -48,6 +48,8 @@ class Workbench:
         self.analysis_process = None
         self.analysis_job = None
         self.analysis_log = None
+        self.model_download_busy = False
+        self.closing = False
         self.evidence_process = None
         self.evidence_log = None
         self.evidence_packet = None
@@ -326,6 +328,8 @@ class Workbench:
             self.setting_vars[key] = var
             if key == "model":
                 ttk.Combobox(row, textvariable=var, values=["tiny", "base", "small", "medium"], state="readonly", width=23).pack(side="left")
+                self.model_download_button = ttk.Button(row, text="Cache model", command=self.cache_selected_model)
+                self.model_download_button.pack(side="left", padx=8)
             elif key == 'ocr_engine':
                 ocr_options = ['windows', 'rapidocr'] if os.name == 'nt' else ['rapidocr']
                 ttk.Combobox(row, textvariable=var, values=ocr_options, state='readonly', width=23).pack(side='left')
@@ -421,6 +425,47 @@ class Workbench:
                                                       "Output: " + str(self.data), "Profile: " + str(APP_HOME / "browsers"),
                                                       ]))
 
+    def cache_selected_model(self):
+        if self.model_download_busy:
+            self.settings_status.set("A model download is already running")
+            return
+        if self.analysis_process or self.run_queue or any(p.busy() for p in self.session_processors):
+            self.settings_status.set("Stop active analysis before caching a model")
+            return
+        model = self.setting_vars["model"].get()
+        self.model_download_busy = True
+        self.model_download_button.configure(state="disabled")
+        self.settings_status.set("Caching " + model.title() + " model. This needs an internet connection.")
+
+        def download():
+            try:
+                os.environ.pop("HF_HUB_OFFLINE", None)
+                os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
+                os.environ["HF_HUB_DISABLE_IMPLICIT_TOKEN"] = "1"
+                os.environ["DO_NOT_TRACK"] = "1"
+                from faster_whisper.utils import download_model
+                cache = str(RUNTIME / "models" / "hub")
+                try:
+                    download_model(model, cache_dir=cache, local_files_only=True)
+                except Exception:
+                    download_model(model, cache_dir=cache, local_files_only=False)
+                result = model.title() + " model is ready for offline use"
+            except Exception as error:
+                result = "Model download failed: " + type(error).__name__
+
+            def finish():
+                self.model_download_busy = False
+                self.model_download_button.configure(state="normal")
+                self.settings_status.set(result)
+
+            if not self.closing:
+                try:
+                    self.root.after(0, finish)
+                except tk.TclError:
+                    pass
+
+        threading.Thread(target=download, name="video-workbench-model-cache", daemon=True).start()
+
     def add_files(self):
         files = filedialog.askopenfilenames(title="Video files", filetypes=[("Video", "*.mp4 *.mkv *.webm *.mov *.m4v *.avi")])
         for file in files:
@@ -479,6 +524,9 @@ class Workbench:
                 self.job_tree.selection_add(item)
 
     def start_queue(self):
+        if self.model_download_busy:
+            self.status.set("Wait for model caching to finish")
+            return
         self.run_queue = True
         self.status.set("Queued")
         self.refresh_jobs()
@@ -675,6 +723,9 @@ class Workbench:
             self.browser_status.set("Browser closed")
 
     def start_scroll(self):
+        if self.model_download_busy:
+            self.browser_status.set("Wait for model caching to finish")
+            return
         prompts = [p.strip() for p in self.keywords.get("1.0", "end").splitlines() if p.strip()]
         if not prompts or len(prompts) > 20 or any(len(p) > 200 for p in prompts):
             self.browser_status.set("Keywords required: 1 to 20")
@@ -703,6 +754,9 @@ class Workbench:
                 self.discovery_tree.selection_add(item)
 
     def queue_discoveries(self):
+        if self.model_download_busy:
+            self.status.set("Wait for model caching to finish")
+            return
         from sessions import SessionQueue
         import uuid
         selected = self.discovery_tree.selection()
@@ -804,6 +858,7 @@ class Workbench:
                     self.last_discovery_refresh = time.monotonic()
 
     def close(self):
+        self.closing = True
         self.run_queue = False
         self.stop_reading()
         for processor in self.session_processors:

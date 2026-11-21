@@ -4,7 +4,7 @@
 
 The public Mac download is a drag-to-Applications `.dmg` built on an Apple Silicon runner. On first open, the app starts a Terminal setup. It uses an existing Python 3.12 installation with Tk when available. Otherwise it uses Homebrew to install `python@3.12` and `python-tk@3.12`, then creates `~/.codex/video-research-runtime/venv`, installs `requirements.txt` and installs the Playwright Chromium browser. If Homebrew is not installed, set it up from [brew.sh](https://brew.sh), then open the app again. The setup asks whether to install the optional Codex skill. Settings can install or update it later.
 
-The Mac app defaults to three CPU threads and RapidOCR. Speech models are downloaded to the local runtime only when used. Choose Tiny or Base for an 8 GB Mac. Settings stores app data in `~/Library/Application Support/VideoWorkbench`; the runtime and model cache remain in `~/.codex/video-research-runtime`.
+The Mac app defaults to three CPU threads and RapidOCR. In Settings, choose a speech model and press **Cache model** while online. The model is stored in the local runtime and is then available offline. Choose Tiny or Base for an 8 GB Mac. Settings stores app data in `~/Library/Application Support/VideoWorkbench`; the runtime and model cache remain in `~/.codex/video-research-runtime`.
 
 To use Obsidian, choose the vault in Settings and press **Use vault for library**, then **Save**. New project folders and Markdown packets are created under `<vault>/Video Workbench`. This does not move existing library data. To use Codex, install the skill in Settings to `~/.agents/skills/video-rabbit-holes`, start a new chat, select a project in Library and copy its path. The user decides when to ask Codex to read that project.
 

@@ -10,7 +10,7 @@ Video Workbench is a desktop app for collecting and organizing evidence from sup
 4. A Terminal window installs Python 3.12, Tk, the app's Python packages and the Chromium browser used by Scroller. If Homebrew is missing, install it from [brew.sh](https://brew.sh) and open Video Workbench again.
 5. Choose whether to install the optional Codex skill. You can change that later in Settings.
 
-The first setup downloads the browser and Python packages. A speech model is downloaded locally when it is first selected. The default Base model and three CPU threads are chosen for an 8 GB Apple Silicon Mac. Tiny uses less memory. Small and Medium use more memory and take longer on CPU.
+The first setup downloads the browser and Python packages. In Settings, select a speech model and press **Cache model** once while online. It is stored locally and works offline after that. The default Base model and three CPU threads are chosen for an 8 GB Apple Silicon Mac. Tiny uses less memory. Small and Medium use more memory and take longer on CPU.
 
 ## Connect Obsidian
 
