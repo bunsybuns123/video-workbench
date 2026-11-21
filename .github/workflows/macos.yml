@@ -32,6 +32,7 @@ jobs:
         run: |
           python -m compileall -q scripts
           python -c "import av, faster_whisper, imageio_ffmpeg, numpy, playwright, rapidocr_onnxruntime, yt_dlp, tkinter; import subprocess; subprocess.run([imageio_ffmpeg.get_ffmpeg_exe(), '-version'], check=True, stdout=subprocess.DEVNULL)"
+          python -c "import sys; from pathlib import Path; sys.path.insert(0, 'scripts'); from install import install_target; assert install_target(Path('/tmp/codex-home'), 'darwin') == Path('/tmp/codex-home/.agents/skills/video-rabbit-holes')"
 
       - name: Build the Mac app bundle
         run: python scripts/package_macos.py --output dist

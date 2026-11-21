@@ -7,10 +7,16 @@ import zipfile
 from common import APP_HOME
 
 
+def install_target(home=None, platform=None):
+    platform = platform or sys.platform
+    root = Path(home or Path.home())
+    codex_skills = Path(".agents") / "skills" if platform == "darwin" else Path(".codex") / "skills"
+    return root / codex_skills / "video-rabbit-holes"
+
+
 def install(source=None):
     source = Path(source or Path(__file__).resolve().parents[1]).resolve()
-    codex_skills = ".agents" / "skills" if sys.platform == "darwin" else ".codex" / "skills"
-    target = Path.home() / codex_skills / "video-rabbit-holes"
+    target = install_target()
     if source == target.resolve():
         print("Already installed")
         return target
